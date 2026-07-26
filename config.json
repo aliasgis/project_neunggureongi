@@ -1,0 +1,63 @@
+{
+  "service": {
+    "title": "Project Neunggureongi OGC Server v1 + PostGIS"
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8001,
+    "fallback_on_conflict": true,
+    "fallback_max_port": 8010,
+    "upload_max_mb": 2048,
+    "wfs_max_records": 5000
+  },
+  "layers": [
+    {
+      "name": "sample_dem",
+      "title": "Sample DEM",
+      "type": "raster",
+      "path": "data/sample_dem.tif",
+      "crs": "EPSG:5186"
+    },
+    {
+      "name": "sample_area",
+      "title": "Sample Area",
+      "type": "shp",
+      "path": "data/sample_area.shp",
+      "crs": "EPSG:5186",
+      "style": {
+        "stroke": "#0055cc",
+        "fill": "#66aaff",
+        "fill_opacity": 0.25
+      }
+    },
+    {
+      "name": "sample_cad",
+      "title": "Sample CAD DXF",
+      "type": "dxf",
+      "path": "data/sample_cad.dxf",
+      "crs": "EPSG:5186",
+      "style": {
+        "stroke": "#cc5500",
+        "fill": "#ffaa66",
+        "fill_opacity": 0.15
+      }
+    },
+    {
+      "name": "postgis_sample",
+      "title": "PostGIS Sample Area",
+      "type": "postgis",
+      "schema": "public",
+      "table": "sample_area",
+      "geometry_column": "geom",
+      "crs": "EPSG:5186",
+      "style": {
+        "stroke": "#008844",
+        "fill": "#66cc99",
+        "fill_opacity": 0.25
+      }
+    }
+  ],
+  "postgis": {
+    "url": "postgresql+psycopg://neung:neungpass@127.0.0.1:5432/neunggureongi"
+  }
+}

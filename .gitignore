@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Runtime outputs
+results/*
+!results/.gitkeep
+
+# Local environment and editor files
+.env
+.env.*
+.admin.key
+data/admin_credentials.bin
+data/admin_auth_backups/
+server.pid
+server.port
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store

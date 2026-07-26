@@ -1,0 +1,7 @@
+﻿name,title,type,path,crs,schema,table,geometry_column,columns,stroke,fill,fill_opacity,max_records,sld_path,enabled
+sample_dem,Sample DEM,raster,data/sample_dem.tif,EPSG:5186,,,,,#0055cc,#66aaff,0.25,5000,,false
+sample_area,Sample Area,shp,data/sample_area.shp,EPSG:5186,,,,,#0055cc,#66aaff,0.25,5000,,true
+sample_cad,Sample CAD DXF,dxf,data/sample_cad.dxf,EPSG:5186,,,,,#cc5500,#ffaa66,0.15,5000,,true
+postgis_sample,PostGIS Sample Area,postgis,,EPSG:5186,public,sample_area,geom,,#008844,#66cc99,0.25,5000,,true
+soil,soiljeju,raster,data/uploads/51aaa163_d846_4959_988a_8b8d0ee6c989/Jeju_Soil_Information_250m.tif,EPSG:4326,,,,,#0055cc,#66aaff,0.25,5000,,true
+test,testshp,shp,data/uploads/07f3da9b_22d8_48a4_9768_960ad8f35e4a/jjijuk.shp,EPSG:4326,,,,,#0055cc,#66aaff,0.25,5000,,true
