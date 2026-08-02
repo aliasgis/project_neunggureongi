@@ -236,13 +236,82 @@ def layer_bounds4326(l):
  if l['type']=='raster':
   return raster_bounds4326(l,BASE)
  return vector_bounds4326(l,BASE,db_engine)
-def caps(service):
+def wms_bbox(query):
+ bounds=bb(qv(query,'BBOX'))
+ version=qv(query,'VERSION','1.3.0')
+ crs=(qv(query,'CRS') or qv(query,'SRS') or '').upper()
+ if version=='1.3.0' and crs=='EPSG:4326':
+  south,west,north,east=bounds
+  return west,south,east,north
+ return bounds
+def wms_layer_capability(layer):
+ name=html.escape(layer['name']);title=html.escape(layer['title'])
+ extent=''
+ try:
+  west,south,east,north=layer_bounds4326(layer)
+  extent=(f'<EX_GeographicBoundingBox><westBoundLongitude>{west}</westBoundLongitude>'
+          f'<eastBoundLongitude>{east}</eastBoundLongitude><southBoundLatitude>{south}</southBoundLatitude>'
+          f'<northBoundLatitude>{north}</northBoundLatitude></EX_GeographicBoundingBox>'
+          f'<BoundingBox CRS="EPSG:4326" minx="{south}" miny="{west}" maxx="{north}" maxy="{east}"/>')
+ except Exception:
+  pass
+ return (f'<Layer queryable="1"><Name>{name}</Name><Title>{title}</Title>'
+         f'<CRS>EPSG:4326</CRS><CRS>EPSG:3857</CRS>{extent}'
+         f'<Style><Name>default</Name><Title>Default style</Title></Style></Layer>')
+def wfs_feature_type_capability(layer):
+ name=html.escape(layer['name']);title=html.escape(layer['title'])
+ bounds=''
+ try:
+  west,south,east,north=layer_bounds4326(layer)
+  bounds=(f'<ows:WGS84BoundingBox><ows:LowerCorner>{west} {south}</ows:LowerCorner>'
+          f'<ows:UpperCorner>{east} {north}</ows:UpperCorner></ows:WGS84BoundingBox>')
+ except Exception:
+  pass
+ return (f'<wfs:FeatureType><wfs:Name>neung:{name}</wfs:Name><wfs:Title>{title}</wfs:Title>'
+         f'<wfs:DefaultCRS>urn:ogc:def:crs:EPSG::{html.escape(layer["crs"].split(":")[-1])}</wfs:DefaultCRS>'
+         f'{bounds}<wfs:OutputFormats><wfs:Format>application/json</wfs:Format>'
+         f'<wfs:Format>application/geo+json</wfs:Format></wfs:OutputFormats></wfs:FeatureType>')
+def caps(service,service_url=''):
  if service=='WMS':
-  ls=''.join(f'<Layer queryable="1"><Name>{html.escape(l["name"])}</Name><Title>{html.escape(l["title"])}</Title><CRS>EPSG:4326</CRS><CRS>EPSG:3857</CRS></Layer>' for l in active_layers())
-  return f'<?xml version="1.0"?><WMS_Capabilities version="1.3.0"><Service><Name>WMS</Name><Title>{CONFIG["service"]["title"]}</Title></Service><Capability><Request><GetCapabilities/><GetMap/><GetFeatureInfo/></Request><Layer>{ls}</Layer></Capability></WMS_Capabilities>'
+  ls=''.join(wms_layer_capability(layer) for layer in active_layers())
+  url=html.escape(service_url,quote=True);title=html.escape(CONFIG['service']['title'])
+  online=f'<OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:type="simple" xlink:href="{url}"/>'
+  return (f'<?xml version="1.0" encoding="UTF-8"?>'
+   f'<WMS_Capabilities xmlns="http://www.opengis.net/wms" xmlns:xlink="http://www.w3.org/1999/xlink" '
+   f'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.3.0" '
+   f'xsi:schemaLocation="http://www.opengis.net/wms https://schemas.opengis.net/wms/1.3.0/capabilities_1_3_0.xsd">'
+   f'<Service><Name>WMS</Name><Title>{title}</Title><Abstract>Project Neunggureongi Web Map Service</Abstract>'
+   f'<OnlineResource xlink:type="simple" xlink:href="{url}"/><Fees>none</Fees><AccessConstraints>none</AccessConstraints></Service>'
+   f'<Capability><Request>'
+   f'<GetCapabilities><Format>text/xml</Format><DCPType><HTTP><Get>{online}</Get></HTTP></DCPType></GetCapabilities>'
+   f'<GetMap><Format>image/png</Format><DCPType><HTTP><Get>{online}</Get></HTTP></DCPType></GetMap>'
+   f'<GetFeatureInfo><Format>application/json</Format><DCPType><HTTP><Get>{online}</Get></HTTP></DCPType></GetFeatureInfo>'
+   f'</Request><Exception><Format>XML</Format></Exception>'
+   f'<Layer queryable="0"><Title>{title}</Title><CRS>EPSG:4326</CRS><CRS>EPSG:3857</CRS>{ls}</Layer>'
+   f'</Capability></WMS_Capabilities>')
  if service=='WFS':
-  ls=''.join(f'<FeatureType><Name>{html.escape(l["name"])}</Name><Title>{html.escape(l["title"])}</Title><DefaultCRS>{html.escape(l["crs"])}</DefaultCRS></FeatureType>' for l in active_layers() if l['type']!='raster')
-  return f'<?xml version="1.0"?><WFS_Capabilities version="2.0.0"><ServiceIdentification><Title>{CONFIG["service"]["title"]}</Title></ServiceIdentification><FeatureTypeList>{ls}</FeatureTypeList></WFS_Capabilities>'
+  ls=''.join(wfs_feature_type_capability(layer) for layer in active_layers() if layer['type']!='raster')
+  url=html.escape(service_url,quote=True);title=html.escape(CONFIG['service']['title'])
+  operation=lambda name: (f'<ows:Operation name="{name}"><ows:DCP><ows:HTTP>'
+                           f'<ows:Get xlink:href="{url}"/></ows:HTTP></ows:DCP></ows:Operation>')
+  return (f'<?xml version="1.0" encoding="UTF-8"?>'
+   f'<wfs:WFS_Capabilities xmlns:wfs="http://www.opengis.net/wfs/2.0" '
+   f'xmlns:ows="http://www.opengis.net/ows/1.1" xmlns:fes="http://www.opengis.net/fes/2.0" '
+   f'xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:xlink="http://www.w3.org/1999/xlink" '
+   f'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:neung="urn:neunggureongi" version="2.0.0" '
+   f'xsi:schemaLocation="http://www.opengis.net/wfs/2.0 https://schemas.opengis.net/wfs/2.0/wfs.xsd">'
+   f'<ows:ServiceIdentification><ows:Title>{title}</ows:Title>'
+   f'<ows:Abstract>Project Neunggureongi Web Feature Service</ows:Abstract>'
+   f'<ows:ServiceType>WFS</ows:ServiceType><ows:ServiceTypeVersion>2.0.0</ows:ServiceTypeVersion>'
+   f'<ows:Fees>none</ows:Fees><ows:AccessConstraints>none</ows:AccessConstraints></ows:ServiceIdentification>'
+   f'<ows:ServiceProvider><ows:ProviderName>Project Neunggureongi</ows:ProviderName>'
+   f'<ows:ProviderSite xlink:href="{url}"/></ows:ServiceProvider>'
+   f'<ows:OperationsMetadata>{operation("GetCapabilities")}{operation("DescribeFeatureType")}{operation("GetFeature")}'
+   f'<ows:Constraint name="ImplementsBasicWFS"><ows:DefaultValue>TRUE</ows:DefaultValue></ows:Constraint>'
+   f'</ows:OperationsMetadata><wfs:FeatureTypeList>{ls}</wfs:FeatureTypeList>'
+   f'<fes:Filter_Capabilities><fes:Conformance>'
+   f'<fes:Constraint name="ImplementsQuery"><ows:DefaultValue>TRUE</ows:DefaultValue></fes:Constraint>'
+   f'</fes:Conformance></fes:Filter_Capabilities></wfs:WFS_Capabilities>')
  if service=='WCS':
   ls=''.join(f'<CoverageSummary><CoverageId>{html.escape(l["name"])}</CoverageId><CoverageSubtype>RectifiedGridCoverage</CoverageSubtype></CoverageSummary>' for l in active_layers() if l['type']=='raster')
   return f'<?xml version="1.0"?><Capabilities version="2.0.1"><ServiceIdentification><Title>{CONFIG["service"]["title"]}</Title></ServiceIdentification><Contents>{ls}</Contents></Capabilities>'
@@ -306,14 +375,14 @@ def leaflet_tms_tile(layer_name:str,z:int,x:int,y:int):
 @app.get('/wms')
 def wms(r:Request):
  q={k.upper():v for k,v in r.query_params.items()};op=(qv(q,'REQUEST') or 'GetCapabilities').upper()
- if op=='GETCAPABILITIES': return xml(caps('WMS'))
+ if op=='GETCAPABILITIES': return xml(caps('WMS',str(r.url_for('wms'))))
  if op=='GETMAP':
-  try:return Response(render_cached(get_layer(qv(q,'LAYERS').split(',')[0]),bb(qv(q,'BBOX')),qv(q,'CRS') or qv(q,'SRS'),int(qv(q,'WIDTH')),int(qv(q,'HEIGHT'))),media_type='image/png',headers={'Cache-Control':'public, max-age=60'})
+  try:return Response(render_cached(get_layer(qv(q,'LAYERS').split(',')[0]),wms_bbox(q),qv(q,'CRS') or qv(q,'SRS'),int(qv(q,'WIDTH')),int(qv(q,'HEIGHT'))),media_type='image/png',headers={'Cache-Control':'public, max-age=60'})
   except Exception as e:return xml(f'<ServiceException>{e}</ServiceException>',400)
  if op=='GETFEATUREINFO':
   try:
    name=(qv(q,'QUERY_LAYERS') or qv(q,'LAYERS')).split(',')[0];layer=get_layer(name)
-   bounds=bb(qv(q,'BBOX'));width=int(qv(q,'WIDTH'));height=int(qv(q,'HEIGHT'))
+   bounds=wms_bbox(q);width=int(qv(q,'WIDTH'));height=int(qv(q,'HEIGHT'))
    column=int(qv(q,'I',qv(q,'X')));row=int(qv(q,'J',qv(q,'Y')))
    if not 0<=column<width or not 0<=row<height:raise ValueError('Click pixel is outside the map image')
    minx,miny,maxx,maxy=bounds;x=minx+(column+.5)/width*(maxx-minx);y=maxy-(row+.5)/height*(maxy-miny)
@@ -326,11 +395,26 @@ def wms(r:Request):
 @app.get('/wfs')
 async def wfs(r:Request):
  q={k.upper():v for k,v in r.query_params.items()};op=(qv(q,'REQUEST') or 'GetCapabilities').upper()
- if op=='GETCAPABILITIES': return xml(caps('WFS'))
- if op=='DESCRIBEFEATURETYPE': return xml('<?xml version="1.0"?><schema xmlns="http://www.w3.org/2001/XMLSchema"><element name="geometry" type="string"/></schema>')
+ if op=='GETCAPABILITIES': return xml(caps('WFS',str(r.url_for('wfs'))))
+ if op=='DESCRIBEFEATURETYPE':
+  try:
+   requested=(qv(q,'TYPENAMES') or qv(q,'TYPENAME') or '').split(',')[0]
+   name=requested.split(':')[-1];layer=get_layer(name)
+   if layer['type']=='raster':raise ValueError('WFS supports vector layers only')
+   safe_name=html.escape(name,quote=True)
+   return xml(f'<?xml version="1.0" encoding="UTF-8"?>'
+    f'<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:gml="http://www.opengis.net/gml/3.2" '
+    f'xmlns:neung="urn:neunggureongi" targetNamespace="urn:neunggureongi" elementFormDefault="qualified">'
+    f'<xsd:import namespace="http://www.opengis.net/gml/3.2" schemaLocation="https://schemas.opengis.net/gml/3.2.1/gml.xsd"/>'
+    f'<xsd:element name="{safe_name}" type="neung:{safe_name}Type" substitutionGroup="gml:AbstractFeature"/>'
+    f'<xsd:complexType name="{safe_name}Type"><xsd:complexContent><xsd:extension base="gml:AbstractFeatureType">'
+    f'<xsd:sequence><xsd:element name="geometry" type="gml:GeometryPropertyType" minOccurs="0" nillable="true"/>'
+    f'</xsd:sequence></xsd:extension></xsd:complexContent></xsd:complexType></xsd:schema>')
+  except Exception as e:return xml(f'<Exception>{html.escape(str(e))}</Exception>',400)
  if op=='GETFEATURE':
   try:
-   name=(qv(q,'TYPENAMES') or qv(q,'TYPENAME'));layer=get_layer(name)
+   requested=(qv(q,'TYPENAMES') or qv(q,'TYPENAME')).split(',')[0]
+   name=requested.split(':')[-1];layer=get_layer(name)
    requested=max(1,int(qv(q,'COUNT',qv(q,'MAXFEATURES','1000'))));maximum=int(layer.get('max_records') or CONFIG.get('server',{}).get('wfs_max_records',5000));count=min(requested,maximum);bboxv=bb(qv(q,'BBOX')) if qv(q,'BBOX') else None
    g=read_vector_layer(layer,BASE,db_engine,qv(q,'SRSNAME') or None,bbox_filter=bboxv,limit=count)
    return JSONResponse(json.loads(g.head(count).to_json()))
@@ -492,6 +576,7 @@ dialog{border:0;border-radius:12px;padding:0;box-shadow:0 25px 70px #0005;width:
 .modal{padding:24px}.modal h2{margin:0 0 18px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.full{grid-column:1/-1}
 label{display:block;font-size:12px;font-weight:700;color:#475467}input,select,textarea{width:100%;margin-top:6px;border:1px solid #cfd6e1;border-radius:7px;padding:10px;background:white}textarea{resize:vertical;font-family:Consolas,monospace;line-height:1.5}.check{display:flex;gap:9px;align-items:center}.check input{width:auto;margin:0}
 .hint{display:block;margin-top:6px;color:#7a8495;font-size:11px;font-weight:400}.uploadState{color:#28664d;font-weight:700}
+.serviceUrlField input{font-family:Consolas,monospace;background:#f8f9fb;color:#344054}
 .foot{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}.empty{text-align:center;padding:50px;color:#7b8495}.toast{position:fixed;right:24px;bottom:24px;padding:12px 18px;background:#172033;color:#fff;border-radius:8px;display:none}
 .previewModal{width:min(1100px,calc(100% - 28px))}.previewHead{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.previewHead h2{margin:0}.previewTools{display:flex;align-items:center;gap:8px}.previewSelect{width:auto;margin:0;padding:8px 32px 8px 10px;font-weight:700}.previewMeta{font-size:13px;color:#687386;margin-bottom:12px}
 #map{height:min(68vh,680px);min-height:420px;border-radius:9px;background:#e9edf3}.mapClose{padding:8px 12px}
@@ -505,6 +590,9 @@ label{display:block;font-size:12px;font-weight:700;color:#475467}input,select,te
 <label>형식 *<select name="type" onchange="typeChanged()"><option value="raster">Raster / GeoTIFF</option><option value="shp">Shapefile</option><option value="dxf">DXF</option><option value="gpkg">GeoPackage</option><option value="postgis">PostGIS</option></select></label>
 <label>좌표계 *<input name="crs" value="EPSG:5186" required></label>
 <label class="wfsField">WFS 최대 레코드<input name="max_records" type="number" min="1" max="100000" value="5000" required><span class="hint">GetFeature 및 WFS 미리보기 최대 조회 건수</span></label>
+<label class="full serviceUrlField">WMS URL<input id="wmsUrl" readonly></label>
+<label class="full serviceUrlField wfsServiceUrlField">WFS URL<input id="wfsUrl" readonly></label>
+<label class="full serviceUrlField heatmapWpsUrlField">WPS Heatmap URL<input id="heatmapWpsUrl" readonly><span class="hint">기본값: 영향 반경 1,000m · 픽셀 크기 100m</span></label>
 <label class="full fileField">레이어 파일 업로드 *<input id="layerFiles" name="upload_files" type="file" multiple><span class="hint" id="uploadHint">GeoTIFF 파일을 선택하세요.</span></label>
 <label class="full fileField">서버 저장 경로<input name="path" readonly placeholder="파일 업로드 후 자동 입력됩니다"><span class="hint uploadState" id="uploadState"></span></label>
 <label class="dbField">스키마<input name="schema" placeholder="public"></label><label class="dbField">테이블 *<input name="table"></label>
@@ -517,7 +605,7 @@ label{display:block;font-size:12px;font-weight:700;color:#475467}input,select,te
 <div class="foot"><button type="button" class="btn ghost" id="cancelButton" onclick="dialog.close()">취소</button><button class="btn primary" id="saveButton">저장</button></div></form></dialog>
 <dialog id="previewDialog" class="previewModal"><div class="modal"><div class="previewHead"><h2 id="previewTitle">레이어 미리보기</h2><div class="previewTools"><select id="previewService" class="previewSelect" onchange="changePreviewService()"></select><button class="btn ghost mapClose" onclick="previewDialog.close()">닫기</button></div></div><div class="previewMeta" id="previewMeta"></div><div id="map"></div></div></dialog>
 <dialog id="transformDialog"><form class="modal" id="transformForm"><h2 id="transformTitle">좌표 변환</h2><div class="grid"><label>원본 좌표계<input name="source_crs" value="EPSG:4326" required placeholder="EPSG:4326"></label><label>대상 좌표계<input name="target_crs" value="EPSG:5186" required placeholder="EPSG:5186"></label><label class="full">입력 좌표 · 한 줄에 X,Y<textarea name="coordinates" rows="7" required placeholder="127.0, 37.5&#10;127.1, 37.6"></textarea></label><label class="full">변환 결과<textarea id="transformResult" rows="7" readonly></textarea></label></div><div class="foot"><button type="button" class="btn ghost" onclick="transformDialog.close()">닫기</button><button class="btn primary" id="transformSubmit">변환 실행</button></div></form></dialog>
-<dialog id="wpsDialog"><form class="modal" id="wpsForm"><h2 id="wpsTitle">WPS 공간 처리</h2><div class="grid"><label>대상 레이어<select id="wpsLayer" onchange="updateWpsProcesses()" required></select></label><label>처리 프로세스<select id="wpsProcess" onchange="updateWpsOptions()" required></select></label><div id="wpsParameters" class="full grid"></div><label class="full">작업 결과<textarea id="wpsResult" rows="7" readonly placeholder="처리 결과와 상태가 표시됩니다."></textarea></label><div class="full"><a id="wpsDownload" class="btn primary" style="display:none;text-decoration:none" download>결과 파일 다운로드</a></div></div><div class="foot"><button type="button" class="btn ghost" onclick="wpsDialog.close()">닫기</button><button class="btn primary" id="wpsSubmit">프로세스 실행</button></div></form></dialog>
+<dialog id="wpsDialog"><form class="modal" id="wpsForm"><h2 id="wpsTitle">WPS 공간 처리</h2><div class="grid"><label>대상 레이어<select id="wpsLayer" onchange="updateWpsProcesses()" required></select></label><label>처리 프로세스<select id="wpsProcess" onchange="updateWpsOptions()" required></select></label><div id="wpsParameters" class="full grid"></div><label class="full">외부 애플리케이션 호출 URL<input id="wpsCallUrl" readonly><span class="hint">HTTP GET 요청 시 결과 파일이 응답됩니다.</span></label><label class="full">작업 결과<textarea id="wpsResult" rows="7" readonly placeholder="처리 결과와 상태가 표시됩니다."></textarea></label><div class="full"><a id="wpsDownload" class="btn primary" style="display:none;text-decoration:none" download>결과 파일 다운로드</a></div></div><div class="foot"><button type="button" class="btn ghost" onclick="wpsDialog.close()">닫기</button><button class="btn primary" id="wpsSubmit">프로세스 실행</button></div></form></dialog>
 <div class="toast" id="toast"></div><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script><script>
 let layers=[],editing=null,map=null,wmsLayer=null,wfsLayer=null,activePreview=null,activePreviewMode='WMS',wpsObjectUrl=null,wpsProcesses=[],previewRefreshTimer=null,previewRequestSeq=0;const dialog=document.querySelector('#dialog'),previewDialog=document.querySelector('#previewDialog'),transformDialog=document.querySelector('#transformDialog'),wpsDialog=document.querySelector('#wpsDialog'),form=document.querySelector('#form'),transformForm=document.querySelector('#transformForm'),wpsForm=document.querySelector('#wpsForm');
 let uiLang=localStorage.getItem('neunggureongi_language')||'ko';const uiMessages={ko:{title:'레이어 목록 관리',logout:'로그아웃',add:'+ 레이어 추가',wps:'WPS 작업',transform:'좌표 변환',loading:'불러오는 중…',status:'상태',name:'이름 / 제목',type:'형식',source:'소스',crs:'좌표계',style:'스타일',manage:'관리',active:'활성',inactive:'비활성',map:'지도',edit:'수정',remove:'삭제',empty:'등록된 레이어가 없습니다.',total:'전체',enabled:'활성',addTitle:'레이어 추가',editTitle:'레이어 수정',cancel:'취소',save:'저장',wms:'WMS 이미지',wfs:'WFS 피처'},en:{title:'Layer Management',logout:'Sign out',add:'+ Add layer',wps:'WPS Tasks',transform:'Transform Coordinates',loading:'Loading…',status:'Status',name:'Name / Title',type:'Type',source:'Source',crs:'CRS',style:'Style',manage:'Actions',active:'Active',inactive:'Inactive',map:'Map',edit:'Edit',remove:'Delete',empty:'No layers registered.',total:'Total',enabled:'Active',addTitle:'Add Layer',editTitle:'Edit Layer',cancel:'Cancel',save:'Save',wms:'WMS Image',wfs:'WFS Features'}};
@@ -528,11 +616,13 @@ function source(l){return l.type==='postgis'?`${l.schema||'public'}.${l.table||'
 async function load(){const r=await fetch('/api/layers');layers=(await r.json()).layers;render()}
 function render(){document.querySelector('#count').textContent=`${t('total')} ${layers.length} · ${t('enabled')} ${layers.filter(x=>x.enabled).length}`;
  document.querySelector('#rows').innerHTML=layers.length?layers.map(l=>`<tr><td><span class="badge ${l.enabled?'':'off'}">${l.enabled?t('active'):t('inactive')}</span></td><td><b>${esc(l.name)}</b><br>${esc(l.title)}</td><td>${esc(l.type)}</td><td>${esc(source(l))}</td><td>${esc(l.crs)}</td><td>${l.style?`<span style="color:${esc(l.style.stroke||'#777')}">●</span> ${esc(l.style.stroke||'-')}`:'-'}</td><td class="actions"><button class="btn primary" onclick="previewLayer('${esc(l.name)}')" ${l.enabled?'':'disabled'}>${t('map')}</button><button class="btn ghost" onclick="openForm('${esc(l.name)}')">${t('edit')}</button><button class="btn danger" onclick="removeLayer('${esc(l.name)}')">${t('remove')}</button></td></tr>`).join(''):`<tr><td colspan="7" class="empty">${t('empty')}</td></tr>`}
+function updateServiceUrls(){const layerName=form.name.value.trim(),editingLayer=!!editing,isVector=form.type.value!=='raster';document.querySelectorAll('.serviceUrlField').forEach(x=>x.style.display=editingLayer?'block':'none');document.querySelector('#wmsUrl').value=layerName?`${location.origin}/wms?SERVICE=WMS&REQUEST=GetCapabilities&LAYERS=${encodeURIComponent(layerName)}`:'';document.querySelector('#wfsUrl').value=layerName?`${location.origin}/wfs?SERVICE=WFS&REQUEST=GetCapabilities&TYPENAMES=${encodeURIComponent(layerName)}`:'';const heatmapParams=new URLSearchParams({SERVICE:'WPS',REQUEST:'Execute',IDENTIFIER:'vector.heatmap',LAYER:layerName,RADIUS_M:'1000',PIXEL_SIZE_M:'100'});document.querySelector('#heatmapWpsUrl').value=layerName?location.origin+'/wps?'+heatmapParams:'';document.querySelector('.wfsServiceUrlField').style.display=editingLayer&&isVector?'block':'none';document.querySelector('.heatmapWpsUrlField').style.display=editingLayer&&isVector?'block':'none'}
 function openForm(name=null){editing=name;form.reset();document.querySelector('#uploadState').textContent='';document.querySelector('#sldUploadState').textContent='';form.crs.value='EPSG:5186';form.max_records.value='5000';form.stroke.value='#0055cc';form.fill.value='#66aaff';form.fill_opacity.value='0.25';form.enabled.checked=true;
  if(name){const l=layers.find(x=>x.name===name);document.querySelector('#formTitle').textContent=t('editTitle');for(const k of ['name','title','type','path','crs','schema','table','geometry_column','columns','max_records','sld_path'])if(form.elements[k])form.elements[k].value=l[k]||'';form.max_records.value=l.max_records||'5000';form.enabled.checked=!!l.enabled;if(l.style){form.stroke.value=l.style.stroke||'#0055cc';form.fill.value=l.style.fill||'#66aaff';form.fill_opacity.value=l.style.fill_opacity??'0.25'}}
  else document.querySelector('#formTitle').textContent=t('addTitle');typeChanged();dialog.showModal()}
-function typeChanged(){const db=form.type.value==='postgis',gpkg=form.type.value==='gpkg',raster=form.type.value==='raster',files=document.querySelector('#layerFiles'),hint=document.querySelector('#uploadHint');document.querySelectorAll('.dbField').forEach(x=>x.style.display=(db||gpkg)?'block':'none');document.querySelectorAll('.fileField').forEach(x=>x.style.display=db?'none':'block');document.querySelectorAll('.wfsField').forEach(x=>x.style.display=raster?'none':'block');form.max_records.required=!raster;form.path.required=false;form.table.required=db;files.required=!db&&!editing;
+function typeChanged(){const db=form.type.value==='postgis',gpkg=form.type.value==='gpkg',raster=form.type.value==='raster',files=document.querySelector('#layerFiles'),hint=document.querySelector('#uploadHint');document.querySelectorAll('.dbField').forEach(x=>x.style.display=(db||gpkg)?'block':'none');document.querySelectorAll('.fileField').forEach(x=>x.style.display=db?'none':'block');document.querySelectorAll('.wfsField').forEach(x=>x.style.display=raster?'none':'block');form.max_records.required=!raster;form.path.required=false;form.table.required=db;files.required=!db&&!editing;updateServiceUrls();
  const options={raster:['.tif,.tiff','GeoTIFF(.tif/.tiff) 파일을 선택하세요.'],shp:['.shp,.shx,.dbf,.prj,.cpg','같은 이름의 .shp, .shx, .dbf 파일을 함께 선택하세요.'],dxf:['.dxf','DXF 파일을 선택하세요.'],gpkg:['.gpkg','GeoPackage(.gpkg) 파일을 선택하세요. 테이블을 비우면 첫 공간 레이어를 사용합니다.']};if(!db){files.accept=options[form.type.value][0];hint.textContent=options[form.type.value][1]}}
+form.name.addEventListener('input',updateServiceUrls);
 async function uploadFiles(files,type){const required={raster:['.tif','.tiff'],shp:['.shp'],dxf:['.dxf'],gpkg:['.gpkg']}[type],extensions=[...files].map(f=>'.'+f.name.split('.').pop().toLowerCase());
  if(!required.some(x=>extensions.includes(x)))throw new Error('선택한 레이어 형식의 주 파일이 없습니다.');
  if(type==='shp'&&!['.shp','.shx','.dbf'].every(x=>extensions.includes(x)))throw new Error('Shapefile은 .shp, .shx, .dbf 파일을 함께 선택해야 합니다.');
@@ -543,8 +633,10 @@ function notify(s){const t=document.querySelector('#toast');t.textContent=s;t.st
 function openTransform(){document.querySelector('#transformResult').value='';transformDialog.showModal()}
 transformForm.onsubmit=async event=>{event.preventDefault();const button=document.querySelector('#transformSubmit');button.disabled=true;try{const values=transformForm.coordinates.value.trim().split(/\\r?\\n/).filter(Boolean).map((line,index)=>{const coordinate=line.trim().split(/[\\s,]+/).map(Number);if(![2,3].includes(coordinate.length)||coordinate.some(value=>!Number.isFinite(value)))throw new Error(`${index+1}행의 좌표 형식이 올바르지 않습니다.`);return coordinate}),response=await fetch('/api/transform',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_crs:transformForm.source_crs.value,target_crs:transformForm.target_crs.value,coordinates:values})}),data=await response.json();if(!response.ok)throw new Error(data.detail||'좌표변환에 실패했습니다.');document.querySelector('#transformResult').value=data.coordinates.map(coordinate=>coordinate.map(value=>Number(value.toFixed(8))).join(', ')).join('\\n')}catch(error){alert(error.message)}finally{button.disabled=false}};
 async function openWps(){const select=document.querySelector('#wpsLayer');select.innerHTML=layers.filter(layer=>layer.enabled).map(layer=>`<option value="${esc(layer.name)}">${esc(layer.title)} (${esc(layer.type)})</option>`).join('');document.querySelector('#wpsResult').value='플러그인 목록을 불러오는 중…';document.querySelector('#wpsDownload').style.display='none';wpsDialog.showModal();try{const response=await fetch('/api/wps/processes'),data=await response.json();if(!response.ok)throw new Error(data.error||'WPS 플러그인 조회 실패');wpsProcesses=data.processes||[];updateWpsProcesses();document.querySelector('#wpsResult').value=`WPS 플러그인 ${wpsProcesses.length}개를 발견했습니다.`}catch(error){document.querySelector('#wpsResult').value='오류: '+error.message}}
-function updateWpsProcesses(){const name=document.querySelector('#wpsLayer').value,layer=layers.find(item=>item.name===name),process=document.querySelector('#wpsProcess');if(!layer){process.innerHTML='';return}const options=wpsProcesses.filter(item=>!item.layer_types.length||item.layer_types.includes(layer.type));process.innerHTML=options.map(item=>`<option value="${esc(item.id)}">${esc(uiLang==='en'?item.title_en:item.title_ko)}</option>`).join('');updateWpsOptions()}
-function updateWpsOptions(){const process=wpsProcesses.find(item=>item.id===document.querySelector('#wpsProcess').value),container=document.querySelector('#wpsParameters');container.innerHTML=process?(process.parameters||[]).map(parameter=>`<label>${esc(uiLang==='en'?parameter.title_en:parameter.title_ko)}<input data-wps-param="${esc(parameter.name)}" type="${parameter.type==='number'?'number':'text'}" value="${esc(parameter.default??'')}" ${parameter.type==='number'?'step="any"':''} ${parameter.required?'required':''}></label>`).join(''):''}
+function updateWpsProcesses(){const name=document.querySelector('#wpsLayer').value,layer=layers.find(item=>item.name===name),process=document.querySelector('#wpsProcess');if(!layer){process.innerHTML='';updateWpsCallUrl();return}const options=wpsProcesses.filter(item=>!item.layer_types.length||item.layer_types.includes(layer.type));process.innerHTML=options.map(item=>`<option value="${esc(item.id)}">${esc(uiLang==='en'?item.title_en:item.title_ko)}</option>`).join('');updateWpsOptions()}
+function updateWpsCallUrl(){const process=document.querySelector('#wpsProcess').value,layer=document.querySelector('#wpsLayer').value;if(!process||!layer){document.querySelector('#wpsCallUrl').value='';return}const params=new URLSearchParams({SERVICE:'WPS',REQUEST:'Execute',IDENTIFIER:process,LAYER:layer});document.querySelectorAll('[data-wps-param]').forEach(input=>{if(input.value!=='')params.set(input.dataset.wpsParam,input.value)});document.querySelector('#wpsCallUrl').value=location.origin+'/wps?'+params}
+function updateWpsOptions(){const process=wpsProcesses.find(item=>item.id===document.querySelector('#wpsProcess').value),container=document.querySelector('#wpsParameters');container.innerHTML=process?(process.parameters||[]).map(parameter=>`<label>${esc(uiLang==='en'?parameter.title_en:parameter.title_ko)}<input data-wps-param="${esc(parameter.name)}" type="${parameter.type==='number'?'number':'text'}" value="${esc(parameter.default??'')}" ${parameter.type==='number'?'step="any"':''} ${parameter.required?'required':''}></label>`).join(''):'';updateWpsCallUrl()}
+document.querySelector('#wpsParameters').addEventListener('input',updateWpsCallUrl);
 wpsForm.onsubmit=async event=>{event.preventDefault();const button=document.querySelector('#wpsSubmit'),result=document.querySelector('#wpsResult'),download=document.querySelector('#wpsDownload');button.disabled=true;download.style.display='none';if(wpsObjectUrl){URL.revokeObjectURL(wpsObjectUrl);wpsObjectUrl=null}result.value='처리 중…';try{const process=document.querySelector('#wpsProcess').value,params=new URLSearchParams({SERVICE:'WPS',REQUEST:'Execute',IDENTIFIER:process,LAYER:document.querySelector('#wpsLayer').value});document.querySelectorAll('[data-wps-param]').forEach(input=>params.set(input.dataset.wpsParam,input.value));const response=await fetch('/wps?'+params),contentType=response.headers.get('content-type')||'';if(contentType.includes('json')){const data=await response.json();if(!response.ok)throw new Error(data.error||'WPS 실행 실패');result.value=JSON.stringify(data,null,2)}else{if(!response.ok)throw new Error('WPS 실행 실패');const blob=await response.blob();wpsObjectUrl=URL.createObjectURL(blob);const disposition=response.headers.get('content-disposition')||'',match=disposition.match(/filename=\"?([^\";]+)\"?/i);download.href=wpsObjectUrl;download.download=match?match[1]:(process.replace('.','_')+(contentType.includes('tiff')?'.tif':'.geojson'));download.style.display='inline-block';result.value=`완료\\n프로세스: ${process}\\n파일 크기: ${(blob.size/1024).toFixed(1)} KB`}}catch(error){result.value='오류: '+error.message}finally{button.disabled=false}};
 wpsDialog.addEventListener('close',()=>{if(wpsObjectUrl){URL.revokeObjectURL(wpsObjectUrl);wpsObjectUrl=null}});
 form.onsubmit=async e=>{e.preventDefault();const button=e.submitter;button.disabled=true;try{const d=Object.fromEntries(new FormData(form));delete d.upload_files;delete d.upload_sld;d.enabled=form.enabled.checked;if(d.type!=='postgis'&&document.querySelector('#layerFiles').files.length)d.path=await uploadFiles(document.querySelector('#layerFiles').files,d.type);if(document.querySelector('#sldFile').files.length)d.sld_path=await uploadSld(document.querySelector('#sldFile').files[0]);if(d.type!=='postgis'&&!d.path)throw new Error('레이어 파일을 선택해 주세요.');const r=await fetch(editing?'/api/layers/'+encodeURIComponent(editing):'/api/layers',{method:editing?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});if(!r.ok){const x=await r.json();throw new Error(x.detail||'저장하지 못했습니다.')}dialog.close();notify('저장했습니다.');load()}catch(error){alert(error.message)}finally{button.disabled=false}};

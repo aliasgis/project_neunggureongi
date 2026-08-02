@@ -1,0 +1,122 @@
+import math
+import uuid
+
+import numpy as np
+import rasterio
+from rasterio.transform import from_bounds
+from scipy.ndimage import gaussian_filter
+
+from vector_layers import read_vector_layer
+from wps.registry import WpsResult
+
+
+PROCESS = {
+    "id": "vector.heatmap",
+    "title_ko": "벡터 히트맵",
+    "title_en": "Vector heatmap",
+    "description": "Create a density heatmap GeoTIFF in EPSG:3857 from vector feature centroids.",
+    "layer_types": ["shp", "dxf", "gpkg", "postgis"],
+    "parameters": [
+        {
+            "name": "radius_m",
+            "title_ko": "영향 반경(m)",
+            "title_en": "Radius (m)",
+            "type": "number",
+            "default": 1000,
+            "required": True,
+        },
+        {
+            "name": "pixel_size_m",
+            "title_ko": "픽셀 크기(m)",
+            "title_en": "Pixel size (m)",
+            "type": "number",
+            "default": 100,
+            "required": True,
+        },
+        {
+            "name": "weight_field",
+            "title_ko": "가중치 필드(선택)",
+            "title_en": "Weight field (optional)",
+            "type": "text",
+            "default": "",
+            "required": False,
+        },
+    ],
+    "output": "file",
+}
+
+
+def execute(layer, parameters, context):
+    radius = float(parameters.get("radius_m", 1000))
+    pixel_size = float(parameters.get("pixel_size_m", 100))
+    weight_field = str(parameters.get("weight_field", "")).strip()
+    if not math.isfinite(radius) or radius <= 0:
+        raise ValueError("radius_m must be greater than 0")
+    if not math.isfinite(pixel_size) or pixel_size <= 0:
+        raise ValueError("pixel_size_m must be greater than 0")
+
+    frame = read_vector_layer(
+        layer,
+        context["base_dir"],
+        context["db_engine"],
+        target_crs="EPSG:3857",
+    )
+    frame = frame.loc[frame.geometry.notna() & ~frame.geometry.is_empty].copy()
+    if frame.empty:
+        raise ValueError("The layer has no valid geometry")
+
+    points = frame.geometry.copy()
+    non_points = ~points.geom_type.isin(["Point", "MultiPoint"])
+    if non_points.any():
+        points.loc[non_points] = points.loc[non_points].centroid
+    points = points.explode(index_parts=False)
+    x = points.x.to_numpy(dtype="float64")
+    y = points.y.to_numpy(dtype="float64")
+
+    if weight_field:
+        if weight_field not in frame.columns:
+            raise ValueError(f'Unknown weight field: {weight_field}')
+        numeric = np.asarray(frame[weight_field], dtype="float64")
+        if len(numeric) != len(x):
+            raise ValueError("MultiPoint layers cannot use weight_field")
+        if not np.isfinite(numeric).all() or (numeric < 0).any():
+            raise ValueError("weight_field must contain finite, non-negative numbers")
+        weights = numeric
+    else:
+        weights = np.ones(len(x), dtype="float64")
+
+    padding = max(radius * 3, pixel_size)
+    minx, miny, maxx, maxy = x.min() - padding, y.min() - padding, x.max() + padding, y.max() + padding
+    width = max(1, int(math.ceil((maxx - minx) / pixel_size)))
+    height = max(1, int(math.ceil((maxy - miny) / pixel_size)))
+    if width * height > 16_000_000:
+        raise ValueError("Heatmap exceeds 16 million pixels; increase pixel_size_m")
+
+    density, _, _ = np.histogram2d(y, x, bins=[height, width], range=[[miny, maxy], [minx, maxx]], weights=weights)
+    density = gaussian_filter(density, sigma=radius / pixel_size, mode="constant")
+    density = np.flipud(density).astype("float32")
+    output = context["results_dir"] / f"heatmap_{uuid.uuid4().hex}.tif"
+    with rasterio.open(
+        output,
+        "w",
+        driver="GTiff",
+        width=width,
+        height=height,
+        count=1,
+        dtype="float32",
+        crs="EPSG:3857",
+        transform=from_bounds(minx, miny, maxx, maxy, width, height),
+        nodata=0,
+        compress="deflate",
+        tiled=width >= 256 and height >= 256,
+    ) as destination:
+        destination.write(density, 1)
+        destination.set_band_description(1, "heat_density")
+        destination.update_tags(
+            process="vector.heatmap",
+            source_layer=layer["name"],
+            radius_m=radius,
+            pixel_size_m=pixel_size,
+            weight_field=weight_field,
+        )
+    return WpsResult("file", output, "image/tiff", output.name)
