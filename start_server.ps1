@@ -23,7 +23,8 @@ if ((Test-Path -LiteralPath $pidFile) -and (Test-Path -LiteralPath $portFile)) {
     )
     if ($pidValid -and $portValid) {
         $existingListener = Get-NetTCPConnection -LocalPort $existingPort `
-            -State Listen | Where-Object { $_.OwningProcess -eq $existingPid }
+            -State Listen -ErrorAction SilentlyContinue |
+            Where-Object { $_.OwningProcess -eq $existingPid }
         if ($existingListener) {
             Write-Host "[INFO] Project Neunggureongi is already running."
             Write-Host "[INFO] PID         : $existingPid"

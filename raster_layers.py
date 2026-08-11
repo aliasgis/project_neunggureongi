@@ -130,6 +130,7 @@ def render_raster(
             dst_crs=crs,
             dst_nodata=np.nan,
             resampling=Resampling.bilinear,
+            num_threads=2,
         )
     valid = np.isfinite(values)
     pixels = np.zeros((height, width, 4), "uint8")
@@ -151,7 +152,7 @@ def render_raster(
             valid, np.interp(values, quantities, opacities), 0
         ).astype("uint8")
         output = io.BytesIO()
-        Image.fromarray(pixels).save(output, "PNG")
+        Image.fromarray(pixels).save(output, "PNG", compress_level=1)
         return output.getvalue()
     normalized = np.clip((values - low) / max(high - low, 1e-6), 0, 1)
     pixels[..., 0] = (60 + 180 * normalized).astype("uint8")
@@ -159,7 +160,7 @@ def render_raster(
     pixels[..., 2] = (70 + 150 * normalized).astype("uint8")
     pixels[..., 3] = np.where(valid, 255, 0)
     output = io.BytesIO()
-    Image.fromarray(pixels).save(output, "PNG")
+    Image.fromarray(pixels).save(output, "PNG", compress_level=1)
     return output.getvalue()
 
 

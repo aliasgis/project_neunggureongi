@@ -4,6 +4,7 @@ import io
 import json
 import math
 import hashlib
+import re
 import threading
 from pathlib import Path
 from typing import Callable
@@ -11,13 +12,52 @@ from typing import Callable
 import ezdxf
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 from PIL import Image, ImageDraw
-from pyproj import Transformer
+from pyproj import CRS, Transformer
 from pyogrio import list_layers, read_info
 from shapely.geometry import LineString, Point, Polygon, box
 from sqlalchemy import text
 
 _INDEX_LOCK = threading.RLock()
+
+
+def apply_cql_filter(frame: gpd.GeoDataFrame, expression: str) -> gpd.GeoDataFrame:
+    """Apply a small, safe CQL subset: comparisons/LIKE joined by AND."""
+    if not expression or not expression.strip():
+        return frame
+    selected = np.ones(len(frame), dtype=bool)
+    clauses = re.split(r"\s+AND\s+", expression.strip(), flags=re.IGNORECASE)
+    pattern = re.compile(r"^\s*([\w.-]+)\s*(<=|>=|<>|!=|=|<|>|LIKE)\s*(.*?)\s*$", re.IGNORECASE)
+    for clause in clauses:
+        match = pattern.fullmatch(clause)
+        if not match:
+            raise ValueError(f"Unsupported CQL_FILTER clause: {clause}")
+        field, operator, raw_value = match.groups()
+        if field not in frame.columns or field == frame.geometry.name:
+            raise ValueError(f"Unknown filter field: {field}")
+        if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in "'\"":
+            value = raw_value[1:-1].replace(raw_value[0] * 2, raw_value[0])
+        else:
+            try:
+                value = float(raw_value)
+            except ValueError:
+                raise ValueError(f"Filter text values must be quoted: {raw_value}")
+        series = frame[field]
+        op = operator.upper()
+        if op == "LIKE":
+            regex = "^" + re.escape(str(value)).replace("%", ".*").replace("_", ".") + "$"
+            condition = series.astype("string").str.match(regex, case=False, na=False)
+        elif op in ("=", "!=", "<>"):
+            condition = series == value
+            if op != "=":
+                condition = ~condition
+        else:
+            numeric = pd.to_numeric(series, errors="coerce")
+            number = float(value)
+            condition = {">": numeric > number, ">=": numeric >= number, "<": numeric < number, "<=": numeric <= number}[op]
+        selected &= np.asarray(condition.fillna(False), dtype=bool)
+    return frame.loc[selected].copy()
 
 
 def list_geopackage_layers(path: Path) -> list[dict]:
@@ -201,13 +241,39 @@ def read_vector_layer(
         table = layer["table"]
         geometry_column = layer.get("geometry_column", "geom")
         columns = layer.get("columns", "*")
+        engine = engine_factory(layer.get("connection_id", ""))
         query = f'SELECT {columns} FROM "{schema}"."{table}"'
         params = {}
         if bbox_filter:
             minx, miny, maxx, maxy = bbox_filter
-            srid = int(str(layer.get("crs", "EPSG:4326")).split(":")[-1])
+            with engine.connect() as connection:
+                srid = connection.execute(
+                    text("SELECT Find_SRID(:schema,:table,:geometry_column)"),
+                    {"schema": schema, "table": table, "geometry_column": geometry_column},
+                ).scalar()
+                # Find_SRID can return 0 for geometry columns that are not
+                # registered correctly in geometry_columns.  In that case,
+                # inspect an actual geometry before falling back to the layer
+                # configuration.
+                if not srid:
+                    srid = connection.execute(
+                        text(
+                            f'SELECT ST_SRID("{geometry_column}") '
+                            f'FROM "{schema}"."{table}" '
+                            f'WHERE "{geometry_column}" IS NOT NULL LIMIT 1'
+                        )
+                    ).scalar()
+            if not srid:
+                configured_crs = CRS.from_user_input(layer.get("crs", "EPSG:4326"))
+                srid = configured_crs.to_epsg() or 4326
+            srid = int(srid or 0)
             query += (
-                f' WHERE ST_Intersects("{geometry_column}", '
+                f' WHERE ST_Intersects('
+                f'CASE WHEN ST_SRID("{geometry_column}") = 0 '
+                f'THEN ST_SetSRID("{geometry_column}", :srid) '
+                f'WHEN ST_SRID("{geometry_column}") <> :srid '
+                f'THEN ST_Transform("{geometry_column}", :srid) '
+                f'ELSE "{geometry_column}" END, '
                 "ST_MakeEnvelope(:minx,:miny,:maxx,:maxy,:srid))"
             )
             params = {
@@ -222,7 +288,7 @@ def read_vector_layer(
             params["limit"] = int(limit)
         frame = gpd.read_postgis(
             text(query),
-            engine_factory(),
+            engine,
             geom_col=geometry_column,
             params=params,
         )
@@ -232,6 +298,7 @@ def read_vector_layer(
         raise ValueError(f'Unsupported vector type: {layer["type"]}')
     if bbox_filter and layer["type"] == "dxf":
         frame = frame[frame.intersects(box(*bbox_filter))]
+    frame = apply_cql_filter(frame, str(layer.get("_cql_filter", "")))
     return frame.to_crs(target_crs) if target_crs else frame
 
 
@@ -320,7 +387,7 @@ def render_vector(
         engine_factory,
         None,
         bbox_filter=source_bounds,
-        geometry_only=True,
+        geometry_only=not bool(layer.get("_cql_filter")),
     )
     max_render_features = 50000
     if len(frame) > max_render_features:
@@ -373,10 +440,11 @@ def render_vector(
                 fill=fill,
                 outline=stroke,
             )
-    for geometry in frame.loc[frame.intersects(box(*source_bounds)), "geometry"]:
+    geometry_name = frame.geometry.name
+    for geometry in frame.loc[frame.intersects(box(*source_bounds)), geometry_name]:
         draw_geometry(geometry)
     output = io.BytesIO()
-    image.save(output, "PNG")
+    image.save(output, "PNG", compress_level=1)
     return output.getvalue()
 
 

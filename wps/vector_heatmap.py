@@ -9,6 +9,13 @@ from scipy.ndimage import gaussian_filter
 from vector_layers import read_vector_layer
 from wps.registry import WpsResult
 
+try:
+    import cupy as cp
+    from cupyx.scipy.ndimage import gaussian_filter as gpu_gaussian_filter
+except (ImportError, ModuleNotFoundError):
+    cp = None
+    gpu_gaussian_filter = None
+
 
 PROCESS = {
     "id": "vector.heatmap",
@@ -44,6 +51,22 @@ PROCESS = {
     ],
     "output": "file",
 }
+
+
+def apply_gaussian_filter(density, sigma):
+    """Use CUDA when available and fall back to SciPy on any GPU runtime error."""
+    if cp is not None and gpu_gaussian_filter is not None:
+        try:
+            device_count = cp.cuda.runtime.getDeviceCount()
+            if device_count > 0:
+                gpu_density = cp.asarray(density)
+                gpu_result = gpu_gaussian_filter(gpu_density, sigma=sigma, mode="constant")
+                result = cp.asnumpy(gpu_result)
+                del gpu_result, gpu_density
+                return result, "cupy-cuda"
+        except Exception:
+            pass
+    return gaussian_filter(density, sigma=sigma, mode="constant"), "scipy-cpu"
 
 
 def execute(layer, parameters, context):
@@ -93,7 +116,7 @@ def execute(layer, parameters, context):
         raise ValueError("Heatmap exceeds 16 million pixels; increase pixel_size_m")
 
     density, _, _ = np.histogram2d(y, x, bins=[height, width], range=[[miny, maxy], [minx, maxx]], weights=weights)
-    density = gaussian_filter(density, sigma=radius / pixel_size, mode="constant")
+    density, accelerator = apply_gaussian_filter(density, radius / pixel_size)
     density = np.flipud(density).astype("float32")
     output = context["results_dir"] / f"heatmap_{uuid.uuid4().hex}.tif"
     with rasterio.open(
@@ -118,5 +141,6 @@ def execute(layer, parameters, context):
             radius_m=radius,
             pixel_size_m=pixel_size,
             weight_field=weight_field,
+            accelerator=accelerator,
         )
     return WpsResult("file", output, "image/tiff", output.name)

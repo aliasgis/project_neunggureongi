@@ -124,8 +124,17 @@ CSV를 외부 편집기로 직접 수정할 때는 UTF-8로 저장하십시오. 
 - `terrain.slope`: 경사도 GeoTIFF 생성
 - `terrain.hillshade`: 음영기복 GeoTIFF 생성
 - `vector.buffer`: 지정 거리의 버퍼 GeoJSON 생성
+- `vector.heatmap`: 벡터 중심점 밀도 heatmap GeoTIFF 생성
 
-통계 결과는 화면에 표시되며 GeoTIFF·GeoJSON 결과는 브라우저에서 다운로드할 수 있습니다.
+통계 결과는 화면에 표시되며 GeoJSON 결과는 브라우저에서 다운로드할 수 있습니다. 관리 UI에서 생성한 GeoTIFF는 24시간 동안 임시 WMS 레이어로 자동 발행되어 `지도에서 보기`로 바로 확인할 수 있고, 원본 파일도 다운로드할 수 있습니다.
+
+외부 호출에서 기존 파일 응답이 필요하면 종전과 같이 실행하고, WMS 발행 참조가 필요하면 `PUBLISH=true`를 추가합니다.
+
+```text
+/wps?SERVICE=WPS&REQUEST=Execute&IDENTIFIER=vector.heatmap&LAYER=sample_area&RADIUS_M=1000&PIXEL_SIZE_M=100&PUBLISH=true
+```
+
+발행 응답에는 `layer_name`, `wms_url`, `download_url`, `bounds`, `expires_at`이 포함됩니다. 임시 레이어와 결과 파일은 만료 후 다음 WPS/WMS 접근 시 정리됩니다.
 
 #### WPS 플러그인 추가
 
