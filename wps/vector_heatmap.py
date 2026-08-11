@@ -1,10 +1,11 @@
 import math
+import re
 import uuid
 
 import numpy as np
 import rasterio
 from rasterio.transform import from_bounds
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import distance_transform_edt, gaussian_filter
 
 from vector_layers import read_vector_layer
 from wps.registry import WpsResult
@@ -48,6 +49,22 @@ PROCESS = {
             "default": "",
             "required": False,
         },
+        {
+            "name": "low_color",
+            "title_ko": "낮은 밀도 색상",
+            "title_en": "Low density color",
+            "type": "color",
+            "default": "#2c7bb6",
+            "required": True,
+        },
+        {
+            "name": "high_color",
+            "title_ko": "높은 밀도 색상",
+            "title_en": "High density color",
+            "type": "color",
+            "default": "#d7191c",
+            "required": True,
+        },
     ],
     "output": "file",
 }
@@ -73,10 +90,16 @@ def execute(layer, parameters, context):
     radius = float(parameters.get("radius_m", 1000))
     pixel_size = float(parameters.get("pixel_size_m", 100))
     weight_field = str(parameters.get("weight_field", "")).strip()
+    low_color = str(parameters.get("low_color", "#2c7bb6")).strip()
+    high_color = str(parameters.get("high_color", "#d7191c")).strip()
     if not math.isfinite(radius) or radius <= 0:
         raise ValueError("radius_m must be greater than 0")
     if not math.isfinite(pixel_size) or pixel_size <= 0:
         raise ValueError("pixel_size_m must be greater than 0")
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", low_color):
+        raise ValueError("low_color must be a hex color such as #2c7bb6")
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", high_color):
+        raise ValueError("high_color must be a hex color such as #d7191c")
 
     frame = read_vector_layer(
         layer,
@@ -116,7 +139,13 @@ def execute(layer, parameters, context):
         raise ValueError("Heatmap exceeds 16 million pixels; increase pixel_size_m")
 
     density, _, _ = np.histogram2d(y, x, bins=[height, width], range=[[miny, maxy], [minx, maxx]], weights=weights)
+    occupied = density > 0
     density, accelerator = apply_gaussian_filter(density, radius / pixel_size)
+    # Gaussian tails are positive across the rectangular raster and would make
+    # WMS render the whole bounding box. Keep a circular 3-sigma influence
+    # area around source cells and write everything outside it as NoData (0).
+    influence_distance_m = distance_transform_edt(~occupied) * pixel_size
+    density[influence_distance_m > radius * 3] = 0
     density = np.flipud(density).astype("float32")
     output = context["results_dir"] / f"heatmap_{uuid.uuid4().hex}.tif"
     with rasterio.open(
@@ -141,6 +170,8 @@ def execute(layer, parameters, context):
             radius_m=radius,
             pixel_size_m=pixel_size,
             weight_field=weight_field,
+            low_color=low_color,
+            high_color=high_color,
             accelerator=accelerator,
         )
     return WpsResult("file", output, "image/tiff", output.name)
