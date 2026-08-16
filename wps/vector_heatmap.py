@@ -141,9 +141,9 @@ def execute(layer, parameters, context):
     density, _, _ = np.histogram2d(y, x, bins=[height, width], range=[[miny, maxy], [minx, maxx]], weights=weights)
     occupied = density > 0
     density, accelerator = apply_gaussian_filter(density, radius / pixel_size)
-    # Gaussian tails are positive across the rectangular raster and would make
-    # WMS render the whole bounding box. Keep a circular 3-sigma influence
-    # area around source cells and write everything outside it as NoData (0).
+    # 가우시안 꼬리는 직사각형 래스터 전체에서 양수이므로 WMS가 전체 경계 상자를
+    # 렌더링하게 됩니다. 원본 셀 주변의 원형 3시그마 영향 영역만 유지하고
+    # 그 밖의 모든 영역은 NoData(0)로 기록합니다.
     influence_distance_m = distance_transform_edt(~occupied) * pixel_size
     density[influence_distance_m > radius * 3] = 0
     density = np.flipud(density).astype("float32")

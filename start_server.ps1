@@ -1,17 +1,19 @@
 $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
-$python = Join-Path $projectRoot "venv\Scripts\python.exe"
+$runtimePython = Join-Path $projectRoot "runtime\python.exe"
+$venvPython = Join-Path $projectRoot "venv\Scripts\python.exe"
+$python = if (Test-Path -LiteralPath $runtimePython) { $runtimePython } else { $venvPython }
 $configPath = Join-Path $projectRoot "config.json"
 $pidFile = Join-Path $projectRoot "server.pid"
 $portFile = Join-Path $projectRoot "server.port"
 
 if (-not (Test-Path -LiteralPath $python)) {
     Write-Host "[ERROR] Python virtual environment was not found."
-    Write-Host "        Run install_and_run.bat first."
+    Write-Host "        Reinstall the application or run install_and_run.bat first."
     exit 1
 }
 
-# Do not start a second instance on the next available port.
+# 다음 사용 가능한 포트에 두 번째 인스턴스를 시작하지 않습니다.
 if ((Test-Path -LiteralPath $pidFile) -and (Test-Path -LiteralPath $portFile)) {
     $existingPid = 0
     $existingPort = 0

@@ -2,7 +2,10 @@ $ErrorActionPreference = "SilentlyContinue"
 $projectRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 $pidFile = Join-Path $projectRoot "server.pid"
 $portFile = Join-Path $projectRoot "server.port"
-$projectPython = Join-Path $projectRoot "venv\Scripts\python.exe"
+$projectPythons = @(
+    (Join-Path $projectRoot "runtime\python.exe"),
+    (Join-Path $projectRoot "venv\Scripts\python.exe")
+)
 $targets = [System.Collections.Generic.HashSet[int]]::new()
 $serverPort = 8000
 if (Test-Path -LiteralPath $portFile) {
@@ -23,16 +26,16 @@ Get-NetTCPConnection -LocalPort $serverPort -State Listen | ForEach-Object {
     [void]$targets.Add([int]$_.OwningProcess)
 }
 
-# Get-NetTCPConnection can omit stale or permission-restricted listeners.
+# Get-NetTCPConnection은 오래되었거나 권한이 제한된 수신 대상을 누락할 수 있습니다.
 netstat -ano | Select-String "^\s*TCP\s+\S+:$serverPort\s+.*LISTENING\s+(\d+)\s*$" | ForEach-Object {
     if ($_.Matches.Count -gt 0) {
         [void]$targets.Add([int]$_.Matches[0].Groups[1].Value)
     }
 }
 
-# Clean up older reload-mode processes that belong to this project.
+# 이 프로젝트에 속한 이전의 다시 로드 모드 프로세스를 정리합니다.
 Get-CimInstance Win32_Process | Where-Object {
-    ($_.ExecutablePath -eq $projectPython) -or
+    ($projectPythons -contains $_.ExecutablePath) -or
     ($_.CommandLine -and $_.CommandLine.Contains($projectRoot) -and
      (
         $_.Name -like "python*" -or

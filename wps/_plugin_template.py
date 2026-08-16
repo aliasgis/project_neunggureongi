@@ -7,7 +7,7 @@ PROCESS = {
     "title_ko": "알고리즘 이름",
     "title_en": "Algorithm name",
     "description": "Describe what this algorithm does.",
-    "layer_types": ["raster"],  # raster, shp, dxf, gpkg, postgis
+    "layer_types": ["raster"],  # 지원 형식: raster, shp, dxf, gpkg, postgis
     "parameters": [
         {
             "name": "example_value",
@@ -18,7 +18,7 @@ PROCESS = {
             "required": True,
         }
     ],
-    "output": "json",  # json or file
+    "output": "json",  # json 또는 file
 }
 
 

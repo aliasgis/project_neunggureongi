@@ -20,6 +20,12 @@ class WpsResult:
 def _load_module(name: str) -> ModuleType:
     full_name = f"wps.{name}"
     if full_name in sys.modules:
+        # A script can be edited more than once within one filesystem timestamp tick.
+        # Remove its bytecode cache so "save and register" always loads fresh source.
+        cached = getattr(sys.modules[full_name], "__cached__", None)
+        if cached:
+            Path(cached).unlink(missing_ok=True)
+        importlib.invalidate_caches()
         return importlib.reload(sys.modules[full_name])
     return importlib.import_module(full_name)
 
@@ -47,6 +53,7 @@ def discover_processes() -> dict[str, dict]:
             "layer_types": list(metadata.get("layer_types", [])),
             "parameters": list(metadata.get("parameters", [])),
             "output": metadata.get("output", "json"),
+            "requires_layer": bool(metadata.get("requires_layer", True)),
             "source": f"wps/{module_info.name}.py",
         }
         processes[process_id] = {
@@ -57,13 +64,16 @@ def discover_processes() -> dict[str, dict]:
 
 
 def execute_process(
-    process_id: str, layer: dict, parameters: dict, context: dict
+    process_id: str, layer: dict | None, parameters: dict, context: dict
 ) -> WpsResult:
     process = discover_processes().get(process_id)
     if not process:
         raise ValueError(f"Unknown WPS process: {process_id}")
+    requires_layer = process["metadata"]["requires_layer"]
+    if requires_layer and layer is None:
+        raise ValueError(f'Process "{process_id}" requires an input layer')
     allowed_types = process["metadata"]["layer_types"]
-    if allowed_types and layer["type"] not in allowed_types:
+    if layer is not None and allowed_types and layer["type"] not in allowed_types:
         raise ValueError(
             f'Process "{process_id}" does not support layer type "{layer["type"]}"'
         )

@@ -14,8 +14,8 @@ from wps.registry import WpsResult
 
 PROCESS = {
     "id": "raster.change_detection",
-    "title_ko": "AI 래스터 변화 탐지",
-    "title_en": "AI raster change detection",
+    "title_ko": "래스터 변화 탐지",
+    "title_en": "raster change detection",
     "description": (
         "Align two rasters and detect changed pixels with an unsupervised, "
         "robust MAD anomaly model."
@@ -80,7 +80,7 @@ def execute(layer, parameters, context):
     if second_layer.get("type") != "raster":
         raise ValueError("second_layer must be a raster layer")
     if second_layer["name"] == layer["name"]:
-        # Comparing a raster to itself is allowed and is useful as a health check.
+        # 상태 점검에 유용하므로 래스터를 자기 자신과 비교하는 것을 허용합니다.
         pass
 
     sensitivity = float(parameters.get("sensitivity", 3.5))

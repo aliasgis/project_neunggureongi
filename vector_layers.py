@@ -20,6 +20,45 @@ from shapely.geometry import LineString, Point, Polygon, box
 from sqlalchemy import text
 
 _INDEX_LOCK = threading.RLock()
+_POSTGIS_INDEX_READY: set[tuple[str, str, str, str]] = set()
+
+
+def ensure_postgis_spatial_index(layer: dict, engine) -> bool:
+    """Create the GiST index needed by interactive WMS rendering, once per process."""
+    schema = layer.get("schema", "public")
+    table = layer["table"]
+    geometry_column = layer.get("geometry_column", "geom")
+    connection_id = layer.get("connection_id", "")
+    key = (connection_id, schema, table, geometry_column)
+    if key in _POSTGIS_INDEX_READY:
+        return True
+    with _INDEX_LOCK:
+        if key in _POSTGIS_INDEX_READY:
+            return True
+        index_name = "idx_wms_" + hashlib.sha1(".".join(key).encode()).hexdigest()[:16]
+        try:
+            with engine.connect() as connection:
+                exists = connection.execute(
+                    text(
+                        "SELECT 1 FROM pg_indexes WHERE schemaname=:schema "
+                        "AND tablename=:table AND indexdef ILIKE '%USING gist%' "
+                        "AND indexdef ILIKE :column LIMIT 1"
+                    ),
+                    {"schema": schema, "table": table, "column": f'%"{geometry_column}"%'},
+                ).scalar()
+            if not exists:
+                quote = lambda value: '"' + str(value).replace('"', '""') + '"'
+                statement = (
+                    f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {quote(index_name)} "
+                    f"ON {quote(schema)}.{quote(table)} USING GIST ({quote(geometry_column)})"
+                )
+                with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+                    connection.exec_driver_sql(statement)
+            _POSTGIS_INDEX_READY.add(key)
+            return True
+        except Exception as error:
+            print(f"[POSTGIS INDEX] {schema}.{table}.{geometry_column}: {error}")
+            return False
 
 
 def apply_cql_filter(frame: gpd.GeoDataFrame, expression: str) -> gpd.GeoDataFrame:
@@ -205,6 +244,8 @@ def read_vector_layer(
     bbox_filter: tuple[float, float, float, float] | None = None,
     limit: int | None = None,
     geometry_only: bool = False,
+    simplify_tolerance: float | None = None,
+    chunk_size: int | None = None,
 ) -> gpd.GeoDataFrame:
     if layer["type"] == "shp":
         source_path = get_vector_spatial_index(layer, base_dir) or (
@@ -242,47 +283,62 @@ def read_vector_layer(
         geometry_column = layer.get("geometry_column", "geom")
         columns = layer.get("columns", "*")
         engine = engine_factory(layer.get("connection_id", ""))
-        query = f'SELECT {columns} FROM "{schema}"."{table}"'
-        params = {}
+        if bbox_filter:
+            ensure_postgis_spatial_index(layer, engine)
+        if geometry_only and simplify_tolerance and simplify_tolerance > 0:
+            select_columns = (
+                f'ST_SimplifyPreserveTopology("{geometry_column}", '
+                f':simplify_tolerance) AS "{geometry_column}"'
+            )
+            params = {"simplify_tolerance": float(simplify_tolerance)}
+        else:
+            select_columns = f'"{geometry_column}"' if geometry_only else columns
+            params = {}
+        query = f'SELECT {select_columns} FROM "{schema}"."{table}"'
         if bbox_filter:
             minx, miny, maxx, maxy = bbox_filter
+            configured_crs = CRS.from_user_input(layer.get("crs", "EPSG:4326"))
+            bbox_srid = configured_crs.to_epsg() or 4326
             with engine.connect() as connection:
-                srid = connection.execute(
+                storage_srid = connection.execute(
                     text("SELECT Find_SRID(:schema,:table,:geometry_column)"),
                     {"schema": schema, "table": table, "geometry_column": geometry_column},
                 ).scalar()
-                # Find_SRID can return 0 for geometry columns that are not
-                # registered correctly in geometry_columns.  In that case,
-                # inspect an actual geometry before falling back to the layer
-                # configuration.
-                if not srid:
-                    srid = connection.execute(
+                # geometry_columns에 올바르게 등록되지 않은 지오메트리 열은
+                # Find_SRID가 0을 반환할 수 있습니다. 이 경우 레이어 설정을
+                # 대신 사용하기 전에 실제 지오메트리를 확인합니다.
+                if not storage_srid:
+                    storage_srid = connection.execute(
                         text(
                             f'SELECT ST_SRID("{geometry_column}") '
                             f'FROM "{schema}"."{table}" '
                             f'WHERE "{geometry_column}" IS NOT NULL LIMIT 1'
                         )
                     ).scalar()
-            if not srid:
-                configured_crs = CRS.from_user_input(layer.get("crs", "EPSG:4326"))
-                srid = configured_crs.to_epsg() or 4326
-            srid = int(srid or 0)
-            query += (
-                f' WHERE ST_Intersects('
-                f'CASE WHEN ST_SRID("{geometry_column}") = 0 '
-                f'THEN ST_SetSRID("{geometry_column}", :srid) '
-                f'WHEN ST_SRID("{geometry_column}") <> :srid '
-                f'THEN ST_Transform("{geometry_column}", :srid) '
-                f'ELSE "{geometry_column}" END, '
-                "ST_MakeEnvelope(:minx,:miny,:maxx,:maxy,:srid))"
-            )
-            params = {
+            storage_srid = int(storage_srid or 0)
+            geometry_expression = f'"{geometry_column}"'
+            if not storage_srid:
+                storage_srid = bbox_srid
+                geometry_expression = f'ST_SetSRID("{geometry_column}", :storage_srid)'
+            envelope = "ST_MakeEnvelope(:minx,:miny,:maxx,:maxy,:bbox_srid)"
+            if storage_srid != bbox_srid:
+                envelope = f"ST_Transform({envelope}, :storage_srid)"
+            # Keep the indexed geometry column bare. Transforming every row (or
+            # wrapping it in CASE) prevents PostgreSQL from using a GiST index.
+            if geometry_expression == f'"{geometry_column}"':
+                query += f' WHERE "{geometry_column}" && {envelope}'
+                if not chunk_size:
+                    query += f' AND ST_Intersects("{geometry_column}", {envelope})'
+            else:
+                query += f' WHERE ST_Intersects({geometry_expression}, {envelope})'
+            params.update({
                 "minx": minx,
                 "miny": miny,
                 "maxx": maxx,
                 "maxy": maxy,
-                "srid": srid,
-            }
+                "bbox_srid": bbox_srid,
+                "storage_srid": storage_srid,
+            })
         if limit:
             query += " LIMIT :limit"
             params["limit"] = int(limit)
@@ -291,7 +347,16 @@ def read_vector_layer(
             engine,
             geom_col=geometry_column,
             params=params,
+            chunksize=chunk_size,
         )
+        if chunk_size:
+            def prepared_chunks():
+                for chunk in frame:
+                    if chunk.crs is None:
+                        chunk = chunk.set_crs(layer.get("crs", "EPSG:4326"))
+                    chunk = apply_cql_filter(chunk, str(layer.get("_cql_filter", "")))
+                    yield chunk.to_crs(target_crs) if target_crs else chunk
+            return prepared_chunks()
         if frame.crs is None:
             frame = frame.set_crs(layer.get("crs", "EPSG:4326"))
     else:
@@ -323,9 +388,35 @@ def vector_bounds4326(layer: dict, base_dir: Path, engine_factory: Callable) -> 
             max(point[0] for point in corners),
             max(point[1] for point in corners),
         )
-    return tuple(
-        read_vector_layer(layer, base_dir, engine_factory, "EPSG:4326").total_bounds
-    )
+    if layer["type"] == "postgis":
+        schema = layer.get("schema", "public")
+        table = layer["table"]
+        geometry_column = layer.get("geometry_column", "geom")
+        engine = engine_factory(layer.get("connection_id", ""))
+        quote = lambda value: '"' + str(value).replace('"', '""') + '"'
+        extent_sql = text(
+            f'WITH b AS (SELECT ST_Extent({quote(geometry_column)}) AS e '
+            f'FROM {quote(schema)}.{quote(table)} WHERE {quote(geometry_column)} IS NOT NULL) '
+            'SELECT ST_XMin(e),ST_YMin(e),ST_XMax(e),ST_YMax(e) FROM b'
+        )
+        with engine.connect() as connection:
+            extent = connection.execute(extent_sql).one_or_none()
+        if not extent or any(value is None for value in extent):
+            raise ValueError("PostGIS layer has no geometry extent")
+        source_crs = layer.get("crs", "EPSG:4326")
+        if str(source_crs).upper() == "EPSG:4326":
+            return tuple(float(value) for value in extent)
+        transformer = Transformer.from_crs(source_crs, "EPSG:4326", always_xy=True)
+        minx, miny, maxx, maxy = map(float, extent)
+        corners = [
+            transformer.transform(minx, miny), transformer.transform(minx, maxy),
+            transformer.transform(maxx, miny), transformer.transform(maxx, maxy),
+        ]
+        return (
+            min(point[0] for point in corners), min(point[1] for point in corners),
+            max(point[0] for point in corners), max(point[1] for point in corners),
+        )
+    return tuple(read_vector_layer(layer, base_dir, engine_factory, "EPSG:4326").total_bounds)
 
 
 def identify_vector(
@@ -377,29 +468,26 @@ def render_vector(
         )
     else:
         source_bounds = bounds
+    draw_minx, draw_miny, draw_maxx, draw_maxy = source_bounds
+    tolerance = max(
+        (draw_maxx - draw_minx) / width,
+        (draw_maxy - draw_miny) / height,
+    ) * 0.35
     render_layer = layer
     spatial_index = get_vector_spatial_index(layer, base_dir)
     if spatial_index:
         render_layer = {**layer, "path": spatial_index.relative_to(base_dir).as_posix()}
-    frame = read_vector_layer(
+    streamed = layer.get("type") == "postgis"
+    frame_or_chunks = read_vector_layer(
         render_layer,
         base_dir,
         engine_factory,
         None,
         bbox_filter=source_bounds,
         geometry_only=not bool(layer.get("_cql_filter")),
+        simplify_tolerance=tolerance,
+        chunk_size=5000 if streamed else None,
     )
-    max_render_features = 50000
-    if len(frame) > max_render_features:
-        step = math.ceil(len(frame) / max_render_features)
-        frame = frame.iloc[::step].copy()
-    draw_minx, draw_miny, draw_maxx, draw_maxy = source_bounds
-    tolerance = max(
-        (draw_maxx - draw_minx) / width,
-        (draw_maxy - draw_miny) / height,
-    ) * 0.35
-    if tolerance > 0 and not frame.empty:
-        frame.geometry = frame.geometry.simplify(tolerance, preserve_topology=True)
 
     def pixel(x, y):
         return (
@@ -440,9 +528,14 @@ def render_vector(
                 fill=fill,
                 outline=stroke,
             )
-    geometry_name = frame.geometry.name
-    for geometry in frame.loc[frame.intersects(box(*source_bounds)), geometry_name]:
-        draw_geometry(geometry)
+    frames = frame_or_chunks if streamed else (frame_or_chunks,)
+    viewport = box(*source_bounds)
+    for frame in frames:
+        if tolerance > 0 and not frame.empty and not streamed:
+            frame.geometry = frame.geometry.simplify(tolerance, preserve_topology=True)
+        geometry_name = frame.geometry.name
+        for geometry in frame.loc[frame.intersects(viewport), geometry_name]:
+            draw_geometry(geometry)
     output = io.BytesIO()
     image.save(output, "PNG", compress_level=1)
     return output.getvalue()
