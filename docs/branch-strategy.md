@@ -50,7 +50,7 @@
 | `fix/*` | 결함 수정 | `develop` (긴급 시 `main`) | `develop` (긴급 시 `main` + `develop`) | `fix/heatmap-radius-unit` |
 | `doc/*` | 문서만 바꾸는 변경 | `develop` | `develop` | `doc/branch-strategy` |
 | `migration/*` | 큰 구조 변경·의존성 일괄 상향·데이터 이관 | `develop` | `develop` | `migration/python-3-12` |
-| `release/*` | 출시 준비(버전 올림·최종 점검) | `develop` | `main` (+ `develop` 역머지) | `release/1.1` |
+| `release/*` | 출시 준비(버전 올림·최종 점검) | `develop` | `main` (+ `develop` 역머지) | `release/1.0` |
 
 이 다섯 가지 외의 접두사(`feat/`, `docs/`, `hotfix/`, `chore/` 등)는 쓰지 않는다.
 비슷한 이름이 섞이면(`feat`·`feature`, `doc`·`docs`) 찾기도 정리하기도 어려워진다.
@@ -72,17 +72,17 @@ gitGraph
   commit id: "문서"
   checkout develop
   merge doc/admin-manual
-  branch release/1.1
-  commit id: "버전 1.1.0"
+  branch release/1.0
+  commit id: "버전 1.0.1"
   checkout main
-  merge release/1.1 tag: "v1.1.0"
+  merge release/1.0 tag: "v1.0.1"
   checkout develop
-  merge release/1.1
+  merge release/1.0
   checkout main
   branch fix/postgis-timeout
   commit id: "긴급 수정"
   checkout main
-  merge fix/postgis-timeout tag: "v1.1.1"
+  merge fix/postgis-timeout tag: "v1.0.2"
   checkout develop
   merge fix/postgis-timeout
 ```
@@ -90,7 +90,7 @@ gitGraph
 경로를 한 줄로 쓰면:
 
 ```
-feature/* · fix/* · doc/* · migration/*  ──PR──▶  develop  ──▶  release/X.Y  ──PR──▶  main (+태그)
+feature/* · fix/* · doc/* · migration/*  ──PR──▶  develop  ──▶  release/x.y  ──PR──▶  main (+태그)
                                                                      └──역머지──▶  develop
 긴급: main ──▶ fix/*  ──PR──▶  main (+태그)  그리고  ──PR──▶  develop
 ```
@@ -116,26 +116,26 @@ feature/* · fix/* · doc/* · migration/*  ──PR──▶  develop  ──�
 `migration/*` 는 영향이 넓으므로 PR 에 **되돌리는 방법**도 적는다.
 (예: `requirements.txt` 일괄 상향 → 이전 버전 고정 목록 첨부)
 
-### 4.2 `release/X.Y` — 출시 준비
+### 4.2 `release/<x.y>` — 출시 준비
 
-1. 출시할 기능이 `develop` 에 모이면 `release/<메이저>.<마이너>` 를 만든다.
+1. 출시할 기능이 `develop` 에 모이면 현재 판 이름으로 `release/<x.y>` 를 만든다(이미 있으면 `develop` 을 그 위에 머지한다).
    ```bash
    git switch develop && git pull --ff-only
-   git switch -c release/1.1
+   git switch -c release/1.0
    ```
 2. 이 브랜치에서는 **버전 올림과 출시 전 수정만** 한다. 새 기능은 넣지 않는다(다음 출시로).
 3. 점검 목록(§6)을 통과하면 `main` 으로 PR 을 열고 **merge commit** 으로 머지한다
    (squash 하면 `develop` 과 조상이 갈라져 다음 출시 때 충돌이 반복된다).
 4. `main` 의 머지 커밋에 태그를 단다 (§5).
-5. `release/X.Y` 를 `develop` 으로 다시 머지한다 — 출시 준비 중 고친 내용이 `develop` 에서 사라지지 않게.
-6. 같은 `X.Y` 의 패치 출시(`1.1.1`, `1.1.2`)가 이어질 수 있으므로 `release/X.Y` 는 **다음 마이너가 출시될 때까지 남겨둔다.**
+5. `release/<x.y>` 를 `develop` 으로 다시 머지한다 — 출시 준비 중 고친 내용이 `develop` 에서 사라지지 않게.
+6. 같은 판의 다음 출시(`1.0.2`, `1.0.3`)도 이 라인에서 이어가므로 `release/<x.y>` 는 **다음 판이 출시될 때까지 남겨둔다.**
 
 ### 4.3 긴급 수정 — 이미 출시한 버전의 결함
 
 `hotfix/` 접두사를 따로 두지 않고 `fix/*` 를 쓰되, 갈라지는 곳만 다르다.
 
-1. `main`(또는 해당 `release/X.Y`)에서 `fix/<설명>` 을 만든다.
-2. 수정 후 `main` 으로 PR → 머지 → 패치 버전 태그(`v1.1.1`).
+1. `main`(또는 해당 `release/<x.y>`)에서 `fix/<설명>` 을 만든다.
+2. 수정 후 `main` 으로 PR → 머지 → 다음 build 로 태그(`v1.0.2`). 긴급 수정용 "패치" 번호는 따로 없다.
 3. **같은 수정을 반드시 `develop` 에도 반영한다** (PR 로 머지하거나 cherry-pick).
    빠뜨리면 다음 출시에서 같은 결함이 되살아난다.
 4. 역머지할 때는 덮어쓰지 말고 diff 를 확인한다. `develop` 에만 있는 변경이 지워지지 않았는지 본다.
@@ -144,25 +144,25 @@ feature/* · fix/* · doc/* · migration/*  ──PR──▶  develop  ──�
 
 ## 5. 버전과 태그
 
-### 버전 번호 — `메이저.마이너.패치`
+버전 매기는 법은 **[버전 정책](versioning.md)** 을 따른다. 요점만:
 
-| 자리 | 올리는 때 | 예 |
-|---|---|---|
-| 메이저 | 호환이 깨지는 변화 — `layers.csv` 형식 변경, API 경로 변경, 설치 방식 변경 | `1.x` → `2.0.0` |
-| 마이너 | 기능 추가 — 새 WPS 플러그인, 새 레이어 형식 지원 | `1.0` → `1.1.0` |
-| 패치 | 결함 수정만 | `1.1.0` → `1.1.1` |
+```
+x.y.z
+└┬┘ └─ build : 출시할 때마다 +1, x.y 가 바뀌어도 0 으로 돌리지 않음
+ └──── 판(版) : 관리자가 판단해 연다
+```
 
-**버전 번호는 한 곳에만 둔다.** 지금은 `1.0.0` 이 세 곳에 따로 적혀 있어 하나만 고치면 서로 어긋난다.
-`version.py`(예: `__version__ = "1.0.0"`) 하나를 만들고 `app.py`·로그인 화면·`start_server.ps1` 이
-그 값을 읽도록 바꾸는 것을 첫 `release/*` 전에 `fix/*` 로 처리하기를 제안한다.
+- 출시 라인 이름은 판: `release/<x.y>` (예: `release/1.0`)
+- 기준점 `v1.0.0` = `89afb00`, 첫 정식 출시는 `1.0.1`
+- 버전 번호는 `version.py` 한 곳에만 둔다.
 
 ### 태그
 
-- 출시할 때마다 `main` 의 해당 커밋에 **annotated 태그**를 단다: `v1.1.0`
-- 메시지에 출시일과 주요 변경을 적는다.
+- 출시할 때마다 `main` 의 해당 커밋에 **annotated 태그**를 단다: `v1.0.1`
+- 메시지에 출시일과 주요 변경을 적는다. 판을 올리는 출시면 그 이유를 첫머리에 적는다.
   ```bash
-  git tag -a v1.1.0 -m "v1.1.0 (2026-11-20) — WPS 경사 등급 추가, 히트맵 반경 수정"
-  git push origin v1.1.0
+  git tag -a v1.0.1 -m "v1.0.1 (2026-11-20) — 브랜치 전략·메시지 규칙·버전 정책 도입"
+  git push origin v1.0.1
   ```
 - 태그를 기준으로 GitHub Release 를 만들고 변경 내역을 적는다.
 - 설치본(zip 등)을 따로 배포한다면 Release 에 첨부하고 SHA-256 을 적는다.
@@ -215,19 +215,17 @@ feature/* · fix/* · doc/* · migration/*  ──PR──▶  develop  ──�
   새로 클론하면 이 레이어들이 오류를 낸다. 레포에는 샘플 레이어만 두고, 실제 운영 레이어 목록은 각 서버에서 관리하는 편이 안전하다 → `fix/*` 로 처리.
 - 서버가 실행 중에 만드는 `cache/` 폴더와, 암호화된 PostGIS 연결 정보 파일 `data/postgis_connections.bin` 이 `.gitignore` 에 없다.
   특히 후자는 실수로 커밋하기 쉽다 → `fix/*` 로 처리.
-- 버전 번호를 한 곳으로 모은다(§5) → `fix/*` 로 처리.
+- 버전 번호를 `version.py` 한 곳으로 모은다([버전 정책](versioning.md)) → `fix/*` 로 처리.
 
 ---
 
-## 9. 커밋 메시지
+## 9. 이슈·커밋·PR 메시지
+
+**[이슈·커밋·PR 작성 규칙](message-convention.md)** 을 따른다. 제목 형식:
 
 ```
-<요약 한 줄 — 무엇을 했는지>
-
-<필요하면 본문 — 왜 바꿨는지, 어떻게 확인했는지>
-
-Refs #<이슈 번호>
+[<대상버전>] <유형>: <요약> (#<이슈>)
 ```
 
-- 요약은 한국어로, 50자 안팎.
-- 한 커밋에는 한 가지 변경만. "기능업데이트"처럼 내용을 알 수 없는 요약은 피한다.
+- `develop` 작업은 현재 판 `[1.0]`, 출시·긴급 수정은 정확한 버전 `[1.0.1]`
+- 유형은 브랜치 그룹 이름 그대로: `feature` · `fix` · `doc` · `migration` · `release`
